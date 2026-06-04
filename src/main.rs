@@ -1,4 +1,4 @@
-mod items;   // <-- pulls in src/items.rs
+mod items;
 
 use bevy::prelude::*;
 use std::collections::HashMap;
@@ -6,7 +6,7 @@ use std::collections::HashMap;
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
-        .insert_resource(items::item_database())   // <-- the item dictionary, as a resource
+        .insert_resource(items::item_database())
         .init_resource::<Inventory>()
         .init_resource::<InventoryOpen>()
         .init_resource::<SettingsOpen>()
@@ -14,7 +14,8 @@ fn main() {
         .init_resource::<Rebinding>()
         .init_resource::<Health>()
         .init_resource::<Hunger>()
-        .add_systems(Startup, (setup, setup_hotbar, setup_inventory, setup_settings))
+        .init_resource::<Held>()
+        .add_systems(Startup, (setup, setup_hotbar, setup_inventory, setup_settings, setup_held))
         .add_systems(Update, (player_movement, follow_player_with_camera).chain())
         .add_systems(Update, (
             select_hotbar_slot,
@@ -26,6 +27,8 @@ fn main() {
             capture_rebind,
             escape_handler,
             update_rebind_labels,
+            click_slot,
+            update_held_display,
             update_slots,
             update_stats_bars,
         ))
@@ -50,7 +53,9 @@ struct Slot { index: usize }
 #[derive(Component)]
 struct SlotLabel { index: usize }
 #[derive(Component)]
-struct Pip { health: bool, index: usize }   // a heart (true) or hunger (false) icon
+struct Pip { health: bool, index: usize }
+#[derive(Component)]
+struct HeldDisplay;
 #[derive(Component)]
 struct InventoryPanel;
 #[derive(Component)]
@@ -127,15 +132,25 @@ fn key_name(k: KeyCode) -> String {
 struct Rebinding(Option<Action>);
 
 // ---------- inventory & stats data ----------
-#[allow(dead_code)]
 #[derive(Clone)]
-struct ItemStack { name: String, count: u32 }
+struct ItemStack { id: &'static str, count: u32 }
 
 #[derive(Resource)]
 struct Inventory { slots: Vec<Option<ItemStack>>, selected: usize }
 impl Default for Inventory {
-    fn default() -> Self { Inventory { slots: vec![None; 36], selected: 0 } }
+    fn default() -> Self {
+        let mut slots: Vec<Option<ItemStack>> = vec![None; 37];   // 0..9 hotbar, 9..36 grid, 36 offhand
+        slots[0]  = Some(ItemStack { id: "iron_sword",   count: 1 });
+        slots[9]  = Some(ItemStack { id: "apple",        count: 5 });
+        slots[10] = Some(ItemStack { id: "stone",        count: 30 });
+        slots[11] = Some(ItemStack { id: "cooked_meat",  count: 3 });
+        slots[12] = Some(ItemStack { id: "healing_herb", count: 2 });
+        Inventory { slots, selected: 0 }
+    }
 }
+
+#[derive(Resource, Default)]
+struct Held(Option<ItemStack>);   // the item currently "on the cursor"
 
 #[derive(Resource, Default)]
 struct InventoryOpen(bool);
@@ -156,7 +171,7 @@ impl Default for Hunger { fn default() -> Self { Hunger { current: 20.0, max: 20
 fn setup(mut commands: Commands) {
     commands.spawn(Camera2d);
     commands.spawn((
-        Sprite::from_color(Color::srgb(1.0, 0.48, 0.27), Vec2::new(24.0, 24.0)),  // smaller player
+        Sprite::from_color(Color::srgb(1.0, 0.48, 0.27), Vec2::new(24.0, 24.0)),
         Transform::from_xyz(0.0, 0.0, 0.0),
         Player,
         DodgeState::default(),
@@ -174,6 +189,7 @@ fn setup(mut commands: Commands) {
 
 fn spawn_slot(parent: &mut ChildSpawnerCommands, index: usize) {
     parent.spawn((
+        Button,
         Node { width: Val::Px(50.0), height: Val::Px(50.0),
             justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() },
         BackgroundColor(Color::srgba(0.25, 0.25, 0.28, 0.85)),
@@ -196,32 +212,29 @@ fn spawn_pip(parent: &mut ChildSpawnerCommands, health: bool, index: usize) {
 }
 
 fn setup_hotbar(mut commands: Commands) {
+    // a bottom strip (not full-screen, so it never blocks clicks on the panel)
     commands.spawn(Node {
-        width: Val::Percent(100.0), height: Val::Percent(100.0),
-        justify_content: JustifyContent::Center, align_items: AlignItems::FlexEnd,
-        padding: UiRect { bottom: Val::Px(16.0), ..default() }, ..default()
+        position_type: PositionType::Absolute,
+        left: Val::Px(0.0), right: Val::Px(0.0), bottom: Val::Px(16.0),
+        justify_content: JustifyContent::Center, ..default()
     })
     .with_children(|root| {
-        // a column: stats bars on top, hotbar slots underneath
         root.spawn(Node { flex_direction: FlexDirection::Column, align_items: AlignItems::Center, row_gap: Val::Px(6.0), ..default() })
             .with_children(|col| {
-                // stats row: hearts on the left, hunger on the right (490px = hotbar width)
-                col.spawn(Node {
-                    width: Val::Px(490.0), flex_direction: FlexDirection::Row,
-                    justify_content: JustifyContent::SpaceBetween, ..default()
-                })
-                .with_children(|stats| {
-                    stats.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(3.0), ..default() })
-                        .with_children(|hp| { for i in 0..10 { spawn_pip(hp, true, i); } });
-                    stats.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(3.0), ..default() })
-                        .with_children(|hg| { for i in 0..10 { spawn_pip(hg, false, i); } });
-                });
-                // the hotbar bar
-                col.spawn((
-                    Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(4.0), padding: UiRect::all(Val::Px(4.0)), ..default() },
-                    BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.45)),
-                ))
-                .with_children(|bar| { for i in 0..9 { spawn_slot(bar, i); } });
+                col.spawn(Node { width: Val::Px(490.0), flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, ..default() })
+                    .with_children(|stats| {
+                        stats.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(3.0), ..default() })
+                            .with_children(|hp| { for i in 0..10 { spawn_pip(hp, true, i); } });
+                        stats.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(3.0), ..default() })
+                            .with_children(|hg| { for i in 0..10 { spawn_pip(hg, false, i); } });
+                    });
+                col.spawn(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: Val::Px(12.0), ..default() })
+                    .with_children(|row| {
+                        row.spawn((Node { padding: UiRect::all(Val::Px(4.0)), ..default() }, BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.45))))
+                            .with_children(|oh| { spawn_slot(oh, 36); });
+                        row.spawn((Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(4.0), padding: UiRect::all(Val::Px(4.0)), ..default() }, BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.45))))
+                            .with_children(|bar| { for i in 0..9 { spawn_slot(bar, i); } });
+                    });
             });
     });
 }
@@ -242,36 +255,51 @@ fn setup_inventory(mut commands: Commands) {
         ))
         .with_children(|panel| {
             panel.spawn((Text::new("Inventory"), TextFont { font_size: 18.0, ..default() }, TextColor(Color::WHITE)));
+            // main grid: indices 9..36
             for r in 0..3 {
                 panel.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(4.0), ..default() })
                     .with_children(|row| { for c in 0..9 { spawn_slot(row, 9 + r * 9 + c); } });
             }
+            // bottom row: offhand (36) set apart, then the hotbar (0..9)
+            panel.spawn(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: Val::Px(12.0), padding: UiRect { top: Val::Px(6.0), ..default() }, ..default() })
+                .with_children(|row| {
+                    spawn_slot(row, 36);
+                    row.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(4.0), ..default() })
+                        .with_children(|bar| { for i in 0..9 { spawn_slot(bar, i); } });
+                });
         });
     });
+}
+
+fn setup_held(mut commands: Commands) {
+    commands.spawn((
+        Text::new(""),
+        TextFont { font_size: 12.0, ..default() },
+        TextColor(Color::WHITE),
+        Node { position_type: PositionType::Absolute, display: Display::None, padding: UiRect::all(Val::Px(3.0)), ..default() },
+        BackgroundColor(Color::srgba(0.1, 0.1, 0.12, 0.95)),
+        HeldDisplay,
+    ));
 }
 
 fn build_keybind_column(parent: &mut ChildSpawnerCommands, rows: &[(Action, &str, KeyCode)]) {
     parent.spawn(Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(6.0), ..default() })
         .with_children(|col| {
             for (action, label, _key) in rows {
-                col.spawn(Node {
-                    width: Val::Px(220.0), flex_direction: FlexDirection::Row,
-                    justify_content: JustifyContent::SpaceBetween, align_items: AlignItems::Center,
-                    column_gap: Val::Px(16.0), ..default()
-                })
-                .with_children(|row| {
-                    row.spawn((Text::new(*label), TextFont { font_size: 13.0, ..default() }, TextColor(Color::srgb(0.8, 0.8, 0.85))));
-                    row.spawn((
-                        Button,
-                        Node { width: Val::Px(70.0), height: Val::Px(26.0),
-                            justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() },
-                        BackgroundColor(Color::srgba(0.25, 0.25, 0.3, 1.0)),
-                        RebindButton { action: *action },
-                    ))
-                    .with_children(|btn| {
-                        btn.spawn((Text::new(""), TextFont { font_size: 12.0, ..default() }, TextColor(Color::WHITE), RebindLabel { action: *action }));
+                col.spawn(Node { width: Val::Px(220.0), flex_direction: FlexDirection::Row,
+                    justify_content: JustifyContent::SpaceBetween, align_items: AlignItems::Center, column_gap: Val::Px(16.0), ..default() })
+                    .with_children(|row| {
+                        row.spawn((Text::new(*label), TextFont { font_size: 13.0, ..default() }, TextColor(Color::srgb(0.8, 0.8, 0.85))));
+                        row.spawn((
+                            Button,
+                            Node { width: Val::Px(70.0), height: Val::Px(26.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() },
+                            BackgroundColor(Color::srgba(0.25, 0.25, 0.3, 1.0)),
+                            RebindButton { action: *action },
+                        ))
+                        .with_children(|btn| {
+                            btn.spawn((Text::new(""), TextFont { font_size: 12.0, ..default() }, TextColor(Color::WHITE), RebindLabel { action: *action }));
+                        });
                     });
-                });
             }
         });
 }
@@ -279,24 +307,20 @@ fn build_keybind_column(parent: &mut ChildSpawnerCommands, rows: &[(Action, &str
 fn setup_settings(mut commands: Commands) {
     commands.spawn((
         Button,
-        Node { position_type: PositionType::Absolute, left: Val::Px(12.0), top: Val::Px(12.0),
-            padding: UiRect::all(Val::Px(8.0)), ..default() },
+        Node { position_type: PositionType::Absolute, left: Val::Px(12.0), top: Val::Px(12.0), padding: UiRect::all(Val::Px(8.0)), ..default() },
         BackgroundColor(Color::srgba(0.2, 0.2, 0.24, 0.9)),
         SettingsButton,
     ))
     .with_children(|b| { b.spawn((Text::new("Settings"), TextFont { font_size: 13.0, ..default() }, TextColor(Color::WHITE))); });
 
     commands.spawn((
-        Node { width: Val::Percent(100.0), height: Val::Percent(100.0),
-            justify_content: JustifyContent::Center, align_items: AlignItems::Center,
-            display: Display::None, ..default() },
+        Node { width: Val::Percent(100.0), height: Val::Percent(100.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, display: Display::None, ..default() },
         BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
         SettingsPanel,
     ))
     .with_children(|backdrop| {
         backdrop.spawn((
-            Node { flex_direction: FlexDirection::Column, align_items: AlignItems::Center,
-                row_gap: Val::Px(10.0), padding: UiRect::all(Val::Px(16.0)), ..default() },
+            Node { flex_direction: FlexDirection::Column, align_items: AlignItems::Center, row_gap: Val::Px(10.0), padding: UiRect::all(Val::Px(16.0)), ..default() },
             BackgroundColor(Color::srgba(0.12, 0.12, 0.15, 0.98)),
         ))
         .with_children(|panel| {
@@ -306,13 +330,79 @@ fn setup_settings(mut commands: Commands) {
                     build_keybind_column(cols, &ACTIONS[0..8]);
                     build_keybind_column(cols, &ACTIONS[8..17]);
                 });
-            panel.spawn((Text::new("click a key, then press the new key  (Esc cancels / closes)"),
-                TextFont { font_size: 11.0, ..default() }, TextColor(Color::srgb(0.55, 0.55, 0.6))));
+            panel.spawn((Text::new("click a key, then press the new key  (Esc cancels / closes)"), TextFont { font_size: 11.0, ..default() }, TextColor(Color::srgb(0.55, 0.55, 0.6))));
         });
     });
 }
 
-// ---------- logic ----------
+// ---------- the click-to-move logic ----------
+fn resolve_click(slot: Option<ItemStack>, held: Option<ItemStack>, db: &items::ItemDb)
+    -> (Option<ItemStack>, Option<ItemStack>)
+{
+    match (slot, held) {
+        (s, None) => (None, s),          // hand empty -> pick up whatever's in the slot
+        (None, h) => (h, None),          // slot empty -> drop held into it
+        (Some(mut s), Some(h)) => {
+            if s.id == h.id {
+                // same item -> stack up to max, keep the leftover in hand
+                let max = db.get(s.id).map(|d| d.max_stack).unwrap_or(64);
+                let moved = max.saturating_sub(s.count).min(h.count);
+                s.count += moved;
+                let leftover = h.count - moved;
+                if leftover > 0 { (Some(s), Some(ItemStack { id: h.id, count: leftover })) }
+                else { (Some(s), None) }
+            } else {
+                (Some(h), Some(s))       // different items -> swap
+            }
+        }
+    }
+}
+
+fn click_slot(
+    inv_open: Res<InventoryOpen>,
+    db: Res<items::ItemDb>,
+    mut inv: ResMut<Inventory>,
+    mut held: ResMut<Held>,
+    q: Query<(&Interaction, &Slot), Changed<Interaction>>,
+) {
+    if !inv_open.0 { return; }
+    for (interaction, slot) in &q {
+        if *interaction != Interaction::Pressed { continue; }
+        let i = slot.index;
+        let slot_item = inv.slots[i].take();
+        let held_item = held.0.take();
+        let (new_slot, new_held) = resolve_click(slot_item, held_item, &db);
+        inv.slots[i] = new_slot;
+        held.0 = new_held;
+    }
+}
+
+fn update_held_display(
+    held: Res<Held>,
+    inv_open: Res<InventoryOpen>,
+    db: Res<items::ItemDb>,
+    windows: Query<&Window>,
+    mut q: Query<(&mut Node, &mut Text), With<HeldDisplay>>,
+) {
+    let Ok((mut node, mut text)) = q.single_mut() else { return; };
+    if !inv_open.0 || held.0.is_none() {
+        node.display = Display::None;
+        return;
+    }
+    node.display = Display::Flex;
+    if let Some(stack) = &held.0 {
+        let name = db.get(stack.id).map(|d| d.name).unwrap_or(stack.id);
+        text.0 = if stack.count > 1 { format!("{} x{}", name, stack.count) } else { name.to_string() };
+    }
+    if let Ok(window) = windows.single() {
+        if let Some(cursor) = window.cursor_position() {
+            node.left = Val::Px(cursor.x + 12.0);
+            node.top = Val::Px(cursor.y + 12.0);
+        }
+    }
+}
+
+// ---------- other logic ----------
 fn select_hotbar_slot(keys: Res<ButtonInput<KeyCode>>, binds: Res<Keybinds>, settings: Res<SettingsOpen>, mut inv: ResMut<Inventory>) {
     if settings.0 { return; }
     let slots = [
@@ -364,20 +454,26 @@ fn escape_handler(keys: Res<ButtonInput<KeyCode>>, mut rebinding: ResMut<Rebindi
 
 fn update_rebind_labels(binds: Res<Keybinds>, rebinding: Res<Rebinding>, mut labels: Query<(&RebindLabel, &mut Text)>) {
     for (label, mut text) in &mut labels {
-        text.0 = if rebinding.0 == Some(label.action) { "press…".to_string() }
-                 else { key_name(binds.get(label.action)) };
+        text.0 = if rebinding.0 == Some(label.action) { "press…".to_string() } else { key_name(binds.get(label.action)) };
     }
 }
 
-fn update_slots(inv: Res<Inventory>, mut slots: Query<(&Slot, &mut BackgroundColor)>, mut labels: Query<(&SlotLabel, &mut Text)>) {
+fn update_slots(
+    db: Res<items::ItemDb>,
+    inv: Res<Inventory>,
+    mut slots: Query<(&Slot, &mut BackgroundColor)>,
+    mut labels: Query<(&SlotLabel, &mut Text)>,
+) {
     for (slot, mut bg) in &mut slots {
         bg.0 = if slot.index == inv.selected { Color::srgba(0.95, 0.78, 0.30, 0.95) }
                else { Color::srgba(0.25, 0.25, 0.28, 0.85) };
     }
     for (label, mut text) in &mut labels {
         text.0 = match &inv.slots[label.index] {
-            Some(stack) if stack.count > 1 => format!("{}\n{}", stack.name, stack.count),
-            Some(stack) => stack.name.clone(),
+            Some(stack) => {
+                let name = db.get(stack.id).map(|d| d.name).unwrap_or(stack.id);
+                if stack.count > 1 { format!("{}\n{}", name, stack.count) } else { name.to_string() }
+            }
             None => String::new(),
         };
     }
@@ -386,7 +482,7 @@ fn update_slots(inv: Res<Inventory>, mut slots: Query<(&Slot, &mut BackgroundCol
 fn update_stats_bars(health: Res<Health>, hunger: Res<Hunger>, mut pips: Query<(&Pip, &mut BackgroundColor)>) {
     for (pip, mut bg) in &mut pips {
         let value = if pip.health { health.current } else { hunger.current };
-        let full = value >= (pip.index as f32 + 1.0) * 2.0;   // each pip = 2 points
+        let full = value >= (pip.index as f32 + 1.0) * 2.0;
         bg.0 = if full {
             if pip.health { Color::srgb(0.86, 0.23, 0.23) } else { Color::srgb(0.77, 0.48, 0.18) }
         } else {
