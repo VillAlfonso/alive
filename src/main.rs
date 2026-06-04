@@ -4,9 +4,15 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .init_resource::<Inventory>()
-        .add_systems(Startup, (setup, setup_hotbar))
+        .init_resource::<InventoryOpen>()
+        .add_systems(Startup, (setup, setup_hotbar, setup_inventory))
         .add_systems(Update, (move_player, follow_player_with_camera).chain())
-        .add_systems(Update, (select_hotbar_slot, update_hotbar))
+        .add_systems(Update, (
+            select_hotbar_slot,
+            toggle_inventory,
+            apply_inventory_visibility,
+            update_slots,
+        ))
         .run();
 }
 
@@ -15,12 +21,15 @@ fn main() {
 struct Player;
 
 #[derive(Component)]
-struct HotbarSlot { index: usize }   // marks a slot box, remembers which slot it is
+struct Slot { index: usize }          // any item slot (hotbar OR inventory)
 
 #[derive(Component)]
-struct SlotLabel { index: usize }    // marks the text inside a slot
+struct SlotLabel { index: usize }     // the text inside a slot
 
-// ---------- the inventory data ----------
+#[derive(Component)]
+struct InventoryPanel;                // the whole pop-up inventory screen
+
+// ---------- inventory data ----------
 #[derive(Clone)]
 struct ItemStack {
     name: String,
@@ -29,19 +38,24 @@ struct ItemStack {
 
 #[derive(Resource)]
 struct Inventory {
-    slots: Vec<Option<ItemStack>>,   // each slot is either empty (None) or holds a stack
-    selected: usize,                 // which hotbar slot is currently active (0..8)
+    slots: Vec<Option<ItemStack>>,    // 36 slots: 0..9 = hotbar, 9..36 = main inventory
+    selected: usize,                  // active hotbar slot (0..8)
 }
 
 impl Default for Inventory {
     fn default() -> Self {
-        let mut slots: Vec<Option<ItemStack>> = vec![None; 9];
+        let mut slots: Vec<Option<ItemStack>> = vec![None; 36];
         slots[0] = Some(ItemStack { name: "Sword".into(), count: 1 });
         slots[1] = Some(ItemStack { name: "Stone".into(), count: 12 });
         slots[2] = Some(ItemStack { name: "Apple".into(), count: 3 });
+        slots[9] = Some(ItemStack { name: "Wood".into(), count: 30 });
+        slots[10] = Some(ItemStack { name: "Iron".into(), count: 5 });
         Inventory { slots, selected: 0 }
     }
 }
+
+#[derive(Resource, Default)]
+struct InventoryOpen(bool);           // is the inventory screen showing?
 
 // ---------- world setup ----------
 fn setup(mut commands: Commands) {
@@ -64,22 +78,44 @@ fn setup(mut commands: Commands) {
     }
 }
 
-// ---------- build the hotbar UI ----------
+// a small helper so we don't repeat the slot-building code
+fn spawn_slot(parent: &mut ChildSpawnerCommands, index: usize) {
+    parent.spawn((
+        Node {
+            width: Val::Px(50.0),
+            height: Val::Px(50.0),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.25, 0.25, 0.28, 0.85)),
+        Slot { index },
+    ))
+    .with_children(|slot| {
+        slot.spawn((
+            Text::new(""),
+            TextFont { font_size: 11.0, ..default() },
+            TextColor(Color::WHITE),
+            TextLayout { justify: Justify::Center, ..default() },
+            SlotLabel { index },
+        ));
+    });
+}
+
+// ---------- the hotbar (always visible) ----------
 fn setup_hotbar(mut commands: Commands) {
-    // a full-screen, see-through container that pins its child to the bottom-centre
     commands.spawn(Node {
         width: Val::Percent(100.0),
         height: Val::Percent(100.0),
-        justify_content: JustifyContent::Center,   // centre horizontally
-        align_items: AlignItems::FlexEnd,           // push to the bottom
+        justify_content: JustifyContent::Center,
+        align_items: AlignItems::FlexEnd,
         padding: UiRect { bottom: Val::Px(16.0), ..default() },
         ..default()
     })
     .with_children(|root| {
-        // the dark bar that sits behind the slots
         root.spawn((
             Node {
-                flex_direction: FlexDirection::Row,   // lay the slots out left-to-right
+                flex_direction: FlexDirection::Row,
                 column_gap: Val::Px(4.0),
                 padding: UiRect::all(Val::Px(4.0)),
                 ..default()
@@ -88,32 +124,60 @@ fn setup_hotbar(mut commands: Commands) {
         ))
         .with_children(|bar| {
             for i in 0..9 {
-                bar.spawn((
-                    Node {
-                        width: Val::Px(50.0),
-                        height: Val::Px(50.0),
-                        justify_content: JustifyContent::Center,
-                        align_items: AlignItems::Center,
-                        ..default()
-                    },
-                    BackgroundColor(Color::srgba(0.25, 0.25, 0.28, 0.85)),
-                    HotbarSlot { index: i },
-                ))
-                .with_children(|slot| {
-                    slot.spawn((
-                        Text::new(""),
-                        TextFont { font_size: 11.0, ..default() },
-                        TextColor(Color::WHITE),
-                        TextLayout { justify: Justify::Center, ..default() },
-                        SlotLabel { index: i },
-                    ));
+                spawn_slot(bar, i);
+            }
+        });
+    });
+}
+
+// ---------- the inventory screen (hidden until E) ----------
+fn setup_inventory(mut commands: Commands) {
+    commands.spawn((
+        Node {
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            display: Display::None,            // start hidden
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),   // dims the world
+        InventoryPanel,
+    ))
+    .with_children(|backdrop| {
+        backdrop.spawn((
+            Node {
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                row_gap: Val::Px(8.0),
+                padding: UiRect::all(Val::Px(14.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.12, 0.12, 0.15, 0.98)),
+        ))
+        .with_children(|panel| {
+            panel.spawn((
+                Text::new("Inventory"),
+                TextFont { font_size: 18.0, ..default() },
+                TextColor(Color::WHITE),
+            ));
+            for r in 0..3 {
+                panel.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    column_gap: Val::Px(4.0),
+                    ..default()
+                })
+                .with_children(|row| {
+                    for c in 0..9 {
+                        spawn_slot(row, 9 + r * 9 + c);   // main-inventory indices 9..36
+                    }
                 });
             }
         });
     });
 }
 
-// ---------- hotbar logic ----------
+// ---------- logic ----------
 fn select_hotbar_slot(keys: Res<ButtonInput<KeyCode>>, mut inv: ResMut<Inventory>) {
     let digits = [
         KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3,
@@ -127,20 +191,34 @@ fn select_hotbar_slot(keys: Res<ButtonInput<KeyCode>>, mut inv: ResMut<Inventory
     }
 }
 
-fn update_hotbar(
+fn toggle_inventory(keys: Res<ButtonInput<KeyCode>>, mut open: ResMut<InventoryOpen>) {
+    if keys.just_pressed(KeyCode::KeyE) {
+        open.0 = !open.0;
+    }
+}
+
+fn apply_inventory_visibility(
+    open: Res<InventoryOpen>,
+    mut panel: Query<&mut Node, With<InventoryPanel>>,
+) {
+    if !open.is_changed() { return; }   // only act the moment it toggles
+    for mut node in &mut panel {
+        node.display = if open.0 { Display::Flex } else { Display::None };
+    }
+}
+
+fn update_slots(
     inv: Res<Inventory>,
-    mut slots: Query<(&HotbarSlot, &mut BackgroundColor)>,
+    mut slots: Query<(&Slot, &mut BackgroundColor)>,
     mut labels: Query<(&SlotLabel, &mut Text)>,
 ) {
-    // repaint each slot: gold if it's the selected one, grey otherwise
     for (slot, mut bg) in &mut slots {
         bg.0 = if slot.index == inv.selected {
-            Color::srgba(0.95, 0.78, 0.30, 0.95)
+            Color::srgba(0.95, 0.78, 0.30, 0.95)   // gold = selected hotbar slot
         } else {
             Color::srgba(0.25, 0.25, 0.28, 0.85)
         };
     }
-    // write each slot's contents into its label
     for (label, mut text) in &mut labels {
         text.0 = match &inv.slots[label.index] {
             Some(stack) if stack.count > 1 => format!("{}\n{}", stack.name, stack.count),
