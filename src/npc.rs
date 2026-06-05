@@ -59,8 +59,10 @@ fn spawn_npc_test(mut commands: Commands) {
             Wander { target: home, pause: 0.0 },
             Speech { cooldown: 2.0 },
         ));
-        if id == 0 {
-            e.insert(crate::dialogue::Talkable { name: "Bram", emotion: "wary" });
+         match id {
+            0 => { e.insert(crate::dialogue::Talkable { name: "Bram", emotion: "wary" }); }
+            1 => { e.insert(crate::dialogue::Talkable { name: "Senna", emotion: "happy" }); }
+            _ => {}
         }
     }
     commands.spawn((

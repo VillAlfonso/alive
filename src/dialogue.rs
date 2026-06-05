@@ -39,6 +39,12 @@ impl Plugin for DialoguePlugin {
 // ---- THE function you'll later swap for a model call ----
 fn placeholder_line(name: &str, line_index: usize) -> Option<String> {
     let lines: &[&str] = match name {
+        "Senna" => &[
+            "*smiles* You're new around here. I like new.",
+            "I tend the herbs past the water. Healing's a slow art.",
+            "Bram acts sour, but he mended my kettle for nothing once. Don't tell him I told you.",
+            "Come find me if you ever need patching up.",
+        ],
         "Bram" => &[
             "*grunts* What brings you to my forge?",
             "That iron you brought was decent. Don't let it go to your head.",
@@ -132,24 +138,24 @@ fn setup_dialogue_ui(mut commands: Commands) {
     });
 }
 
-// E to start talking to the nearest Talkable in range; E/Space to advance; Esc to close.
-// (We read the player's position via the Player marker from main.rs.)
+
 fn talk_input(
     keys: Res<ButtonInput<KeyCode>>,
+    binds: Res<crate::Keybinds>,
     mut dialogue: ResMut<Dialogue>,
     mut speaker: ResMut<CurrentSpeaker>,
     players: Query<&Transform, With<crate::Player>>,
     talkables: Query<(&Transform, &Talkable)>,
 ) {
-    // close
+    let talk_key = binds.get(crate::Action::Talk);
+
     if dialogue.active && keys.just_pressed(KeyCode::Escape) {
         dialogue.active = false;
         return;
     }
 
     if !dialogue.active {
-        // start a conversation with the nearest NPC in range when E is pressed
-        if !keys.just_pressed(KeyCode::KeyE) { return; }
+        if !keys.just_pressed(talk_key) { return; }
         let Ok(player) = players.single() else { return; };
         let ppos = player.translation.truncate();
 
@@ -167,11 +173,10 @@ fn talk_input(
             speaker.emotion = talk.emotion;
         }
     } else {
-        // advance lines with E or Space
-        if keys.just_pressed(KeyCode::KeyE) || keys.just_pressed(KeyCode::Space) {
+        if keys.just_pressed(talk_key) {
             dialogue.line_index += 1;
             if placeholder_line(speaker.name, dialogue.line_index).is_none() {
-                dialogue.active = false;   // ran out of lines -> close
+                dialogue.active = false;
             }
         }
     }
