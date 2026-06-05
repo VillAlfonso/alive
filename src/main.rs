@@ -1,5 +1,6 @@
 mod items;
 mod npc;   // <-- NPC test (delete this line + npc.rs to remove)
+mod dialogue;
 
 use bevy::prelude::*;
 use std::collections::HashMap;
@@ -8,6 +9,7 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugins(npc::NpcPlugin)   // <-- NPC test (delete this line to remove)
+        .add_plugins(dialogue::DialoguePlugin)
         .insert_resource(items::item_database())
         .init_resource::<Inventory>()
         .init_resource::<InventoryOpen>()
