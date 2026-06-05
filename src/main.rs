@@ -1,4 +1,5 @@
 mod items;
+mod npc;   // <-- NPC test (delete this line + npc.rs to remove)
 
 use bevy::prelude::*;
 use std::collections::HashMap;
@@ -6,6 +7,7 @@ use std::collections::HashMap;
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
+        .add_plugins(npc::NpcPlugin)   // <-- NPC test (delete this line to remove)
         .insert_resource(items::item_database())
         .init_resource::<Inventory>()
         .init_resource::<InventoryOpen>()
@@ -139,7 +141,7 @@ struct ItemStack { id: &'static str, count: u32 }
 struct Inventory { slots: Vec<Option<ItemStack>>, selected: usize }
 impl Default for Inventory {
     fn default() -> Self {
-        let mut slots: Vec<Option<ItemStack>> = vec![None; 37];   // 0..9 hotbar, 9..36 grid, 36 offhand
+        let mut slots: Vec<Option<ItemStack>> = vec![None; 37];
         slots[0]  = Some(ItemStack { id: "iron_sword",   count: 1 });
         slots[9]  = Some(ItemStack { id: "apple",        count: 5 });
         slots[10] = Some(ItemStack { id: "stone",        count: 30 });
@@ -150,7 +152,7 @@ impl Default for Inventory {
 }
 
 #[derive(Resource, Default)]
-struct Held(Option<ItemStack>);   // the item currently "on the cursor"
+struct Held(Option<ItemStack>);
 
 #[derive(Resource, Default)]
 struct InventoryOpen(bool);
@@ -212,7 +214,6 @@ fn spawn_pip(parent: &mut ChildSpawnerCommands, health: bool, index: usize) {
 }
 
 fn setup_hotbar(mut commands: Commands) {
-    // a bottom strip (not full-screen, so it never blocks clicks on the panel)
     commands.spawn(Node {
         position_type: PositionType::Absolute,
         left: Val::Px(0.0), right: Val::Px(0.0), bottom: Val::Px(16.0),
@@ -255,12 +256,10 @@ fn setup_inventory(mut commands: Commands) {
         ))
         .with_children(|panel| {
             panel.spawn((Text::new("Inventory"), TextFont { font_size: 18.0, ..default() }, TextColor(Color::WHITE)));
-            // main grid: indices 9..36
             for r in 0..3 {
                 panel.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(4.0), ..default() })
                     .with_children(|row| { for c in 0..9 { spawn_slot(row, 9 + r * 9 + c); } });
             }
-            // bottom row: offhand (36) set apart, then the hotbar (0..9)
             panel.spawn(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: Val::Px(12.0), padding: UiRect { top: Val::Px(6.0), ..default() }, ..default() })
                 .with_children(|row| {
                     spawn_slot(row, 36);
@@ -335,16 +334,15 @@ fn setup_settings(mut commands: Commands) {
     });
 }
 
-// ---------- the click-to-move logic ----------
+// ---------- click-to-move inventory ----------
 fn resolve_click(slot: Option<ItemStack>, held: Option<ItemStack>, db: &items::ItemDb)
     -> (Option<ItemStack>, Option<ItemStack>)
 {
     match (slot, held) {
-        (s, None) => (None, s),          // hand empty -> pick up whatever's in the slot
-        (None, h) => (h, None),          // slot empty -> drop held into it
+        (s, None) => (None, s),
+        (None, h) => (h, None),
         (Some(mut s), Some(h)) => {
             if s.id == h.id {
-                // same item -> stack up to max, keep the leftover in hand
                 let max = db.get(s.id).map(|d| d.max_stack).unwrap_or(64);
                 let moved = max.saturating_sub(s.count).min(h.count);
                 s.count += moved;
@@ -352,7 +350,7 @@ fn resolve_click(slot: Option<ItemStack>, held: Option<ItemStack>, db: &items::I
                 if leftover > 0 { (Some(s), Some(ItemStack { id: h.id, count: leftover })) }
                 else { (Some(s), None) }
             } else {
-                (Some(h), Some(s))       // different items -> swap
+                (Some(h), Some(s))
             }
         }
     }
