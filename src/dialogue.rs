@@ -25,6 +25,11 @@ struct Typing { active: bool, broadcast: bool, buffer: String }
 #[derive(Resource, Default)]
 pub struct InputLock(pub bool);
 
+#[derive(Clone)]
+pub struct BroadcastMsg { pub text: String, pub pos: Vec2 }
+#[derive(Resource, Default)]
+pub struct PendingBroadcast(pub Option<BroadcastMsg>);
+
 #[derive(Resource)]
 struct LlmChannel { tx: Sender<String>, rx: Mutex<Receiver<String>> }
 impl Default for LlmChannel {
@@ -58,6 +63,7 @@ impl Plugin for DialoguePlugin {
            .init_resource::<CurrentSpeaker>()
            .init_resource::<Typing>()
            .init_resource::<InputLock>()
+           .init_resource::<PendingBroadcast>()
            .init_resource::<LlmChannel>()
            .add_systems(Startup, setup_dialogue_ui)
            .add_systems(Update, (
@@ -106,6 +112,29 @@ fn ask_model(tx: Sender<String>, name: &'static str, player_line: &str) {
             Err(_) => "*(can't find their voice)*".to_string(),
         };
         let _ = tx.send(reply);
+    });
+}
+
+// fire a model request for a specific NPC; reply comes back tagged with that entity
+pub fn request_npc_line(tx: Sender<(Entity, String)>, entity: Entity, name: &str, situation: String) {
+    let prompt = system_prompt(name);
+    thread::spawn(move || {
+        let body = serde_json::json!({
+            "model": MODEL,
+            "stream": false,
+            "messages": [
+                { "role": "system", "content": prompt },
+                { "role": "user", "content": situation }
+            ]
+        });
+        let result = ureq::post("http://localhost:11434/api/chat")
+            .send_json(body)
+            .and_then(|resp| resp.into_json::<serde_json::Value>().map_err(Into::into));
+        let reply = match result {
+            Ok(json) => json["message"]["content"].as_str().unwrap_or("").trim().to_string(),
+            Err(_) => String::new(),
+        };
+        if !reply.is_empty() { let _ = tx.send((entity, reply)); }
     });
 }
 
@@ -260,6 +289,7 @@ fn typing_system(
     binds: Res<crate::Keybinds>,
     keys: Res<ButtonInput<KeyCode>>,
     mut kbd: MessageReader<KeyboardInput>,
+    mut pending: ResMut<PendingBroadcast>,
     players: Query<&Transform, With<crate::Player>>,
     mut commands: Commands,
     mut line_q: Query<&mut Text, With<DialogueText>>,
@@ -304,13 +334,15 @@ fn typing_system(
         if msg.is_empty() { return; }
         if broadcast {
             if let Ok(p) = players.single() {
+                let pos = p.translation.truncate();
                 commands.spawn((
-                    Text2d::new(msg),
+                    Text2d::new(msg.clone()),
                     TextFont { font_size: 14.0, ..default() },
                     TextColor(Color::srgb(1.0, 0.95, 0.6)),
                     Transform::from_xyz(p.translation.x, p.translation.y + 34.0, 6.0),
                     PlayerShout { timer: 3.0 },
                 ));
+                pending.0 = Some(BroadcastMsg { text: msg, pos });
             }
         } else {
             if let Ok(mut text) = line_q.single_mut() { text.0 = "...".to_string(); }

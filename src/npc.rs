@@ -1,4 +1,6 @@
 use bevy::prelude::*;
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Mutex;
 
 // ===== NPC simulation test — delete this file + the two npc lines in main.rs to remove =====
 
@@ -18,12 +20,17 @@ const SOCIAL_DISTANCE: f32 = 46.0;
 const BUBBLE_DURATION: f32 = 3.0;
 const BUBBLE_HEIGHT: f32 = 34.0;
 
+const HEAR_RANGE: f32 = 420.0;        // how far a shout carries
+const RESPOND_THRESHOLD: f32 = 0.35;  // interest needed to bother answering
+
 #[derive(Component)]
 struct Npc;
 #[derive(Component)]
 struct NpcId(u32);
 #[derive(Component)]
 struct Needs { hunger: f32, thirst: f32 }
+#[derive(Component)]
+struct Sociability(f32);   // 0..1 — how readily this NPC engages
 #[derive(Component)]
 struct Home(Vec2);
 #[derive(Component)]
@@ -35,31 +42,51 @@ struct Speech { cooldown: f32 }
 #[derive(Component)]
 struct SpeechBubble { timer: f32, owner: Entity }
 
+// replies for NPC bubbles come back from the model on this channel
+#[derive(Resource)]
+struct NpcLlmChannel { tx: Sender<(Entity, String)>, rx: Mutex<Receiver<(Entity, String)>> }
+impl Default for NpcLlmChannel {
+    fn default() -> Self {
+        let (tx, rx) = channel();
+        NpcLlmChannel { tx, rx: Mutex::new(rx) }
+    }
+}
+
 pub struct NpcPlugin;
 impl Plugin for NpcPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_npc_test)
-           .add_systems(Update, (npc_needs, npc_behavior, npc_speak, update_bubbles).chain());
+        app.init_resource::<NpcLlmChannel>()
+           .add_systems(Startup, spawn_npc_test)
+           .add_systems(Update, (
+               npc_needs,
+               npc_behavior,
+               npc_speak,
+               update_bubbles,
+               npc_hear_broadcast,
+               receive_npc_lines,
+           ));
     }
 }
 
 fn spawn_npc_test(mut commands: Commands) {
+    // id, home, hunger, thirst, sociability
     let villagers = [
-        (0u32, Vec2::new(-150.0, -100.0), 0.0, 0.0),
-        (1u32, Vec2::new(120.0, -40.0), 10.0, 25.0),
+        (0u32, Vec2::new(-150.0, -100.0), 0.0, 0.0, 0.45),
+        (1u32, Vec2::new(120.0, -40.0), 10.0, 25.0, 0.85),
     ];
-    for (id, home, hunger, thirst) in villagers {
+    for (id, home, hunger, thirst, soc) in villagers {
         let mut e = commands.spawn((
             Sprite::from_color(Color::srgb(0.3, 0.8, 0.4), Vec2::new(22.0, 22.0)),
             Transform::from_xyz(home.x, home.y, 0.0),
             Npc,
             NpcId(id),
             Needs { hunger, thirst },
+            Sociability(soc),
             Home(home),
             Wander { target: home, pause: 0.0 },
             Speech { cooldown: 2.0 },
         ));
-         match id {
+        match id {
             0 => { e.insert(crate::dialogue::Talkable { name: "Bram", emotion: "wary" }); }
             1 => { e.insert(crate::dialogue::Talkable { name: "Senna", emotion: "happy" }); }
             _ => {}
@@ -205,5 +232,57 @@ fn update_bubbles(
         }
         let alpha = bubble.timer.min(1.0);
         color.0 = color.0.with_alpha(alpha);
+    }
+}
+
+// a shout went out -> every nearby NPC judges its own interest; the keenest one answers
+fn npc_hear_broadcast(
+    mut pending: ResMut<crate::dialogue::PendingBroadcast>,
+    channel: Res<NpcLlmChannel>,
+    npcs: Query<(Entity, &Transform, &Needs, &Sociability, &crate::dialogue::Talkable)>,
+) {
+    let Some(msg) = pending.0.take() else { return; };   // consume the shout
+
+    let mut best: Option<(Entity, &'static str, f32)> = None;
+    for (e, t, needs, soc, talk) in &npcs {
+        let dist = t.translation.truncate().distance(msg.pos);
+        if dist > HEAR_RANGE { continue; }                       // out of earshot
+        let content = needs.hunger < NEED_THRESHOLD && needs.thirst < NEED_THRESHOLD;
+        if !content { continue; }                                // too busy/needy to care
+        let interest = soc.0 - dist / HEAR_RANGE;                // social, and close = keener
+        if interest < RESPOND_THRESHOLD { continue; }
+        if best.map_or(true, |(_, _, b)| interest > b) {
+            best = Some((e, talk.name, interest));
+        }
+    }
+
+    if let Some((entity, name, _)) = best {
+        let situation = format!(
+            "Someone nearby shouts: \"{}\". You overhear it from across the way. \
+             React briefly in character — answer them, or react to what they said.",
+            msg.text
+        );
+        crate::dialogue::request_npc_line(channel.tx.clone(), entity, name, situation);
+    }
+}
+
+// model replies for NPCs arrive here -> float them as a bubble over the right NPC
+fn receive_npc_lines(
+    mut commands: Commands,
+    channel: Res<NpcLlmChannel>,
+    npcs: Query<&Transform, With<Npc>>,
+) {
+    if let Ok(rx) = channel.rx.lock() {
+        while let Ok((entity, reply)) = rx.try_recv() {
+            if let Ok(t) = npcs.get(entity) {
+                commands.spawn((
+                    Text2d::new(reply),
+                    TextFont { font_size: 14.0, ..default() },
+                    TextColor(Color::srgb(0.85, 0.95, 1.0)),
+                    Transform::from_xyz(t.translation.x, t.translation.y + BUBBLE_HEIGHT, 5.0),
+                    SpeechBubble { timer: BUBBLE_DURATION + 2.0, owner: entity },
+                ));
+            }
+        }
     }
 }
