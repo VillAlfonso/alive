@@ -21,7 +21,6 @@ const BUBBLE_DURATION: f32 = 3.0;
 const BUBBLE_HEIGHT: f32 = 34.0;
 
 const HEAR_RANGE: f32 = 420.0;        // how far a shout carries
-const RESPOND_THRESHOLD: f32 = 0.35;  // interest needed to bother answering
 
 #[derive(Component)]
 struct Npc;
@@ -246,11 +245,9 @@ fn npc_hear_broadcast(
     let mut best: Option<(Entity, &'static str, f32)> = None;
     for (e, t, needs, soc, talk) in &npcs {
         let dist = t.translation.truncate().distance(msg.pos);
-        if dist > HEAR_RANGE { continue; }                       // out of earshot
-        let content = needs.hunger < NEED_THRESHOLD && needs.thirst < NEED_THRESHOLD;
-        if !content { continue; }                                // too busy/needy to care
-        let interest = soc.0 - dist / HEAR_RANGE;                // social, and close = keener
-        if interest < RESPOND_THRESHOLD { continue; }
+        if dist > HEAR_RANGE { continue; }                          // out of earshot
+        if needs.hunger > 90.0 || needs.thirst > 90.0 { continue; } // only ignore if truly desperate
+        let interest = soc.0 + (1.0 - dist / HEAR_RANGE) * 0.5;     // sociable + close = keener
         if best.map_or(true, |(_, _, b)| interest > b) {
             best = Some((e, talk.name, interest));
         }

@@ -109,7 +109,7 @@ fn ask_model(tx: Sender<String>, name: &'static str, player_line: &str) {
             .and_then(|resp| resp.into_json::<serde_json::Value>().map_err(Into::into));
         let reply = match result {
             Ok(json) => json["message"]["content"].as_str().unwrap_or("...").trim().to_string(),
-            Err(_) => "*(can't find their voice)*".to_string(),
+            Err(e) => format!("*(can't reach model: {})*", e),
         };
         let _ = tx.send(reply);
     });
@@ -132,9 +132,10 @@ pub fn request_npc_line(tx: Sender<(Entity, String)>, entity: Entity, name: &str
             .and_then(|resp| resp.into_json::<serde_json::Value>().map_err(Into::into));
         let reply = match result {
             Ok(json) => json["message"]["content"].as_str().unwrap_or("").trim().to_string(),
-            Err(_) => String::new(),
+            Err(e) => format!("*(error: {})*", e),
         };
-        if !reply.is_empty() { let _ = tx.send((entity, reply)); }
+        let out = if reply.is_empty() { "*(...)*".to_string() } else { reply };
+        let _ = tx.send((entity, out));
     });
 }
 
@@ -318,6 +319,7 @@ fn typing_system(
         match &ev.logical_key {
             Key::Enter => submit = true,
             Key::Backspace => { typing.buffer.pop(); }
+            Key::Space => typing.buffer.push(' '),
             Key::Character(input) => {
                 if input.chars().any(|c| c.is_control()) { continue; }
                 typing.buffer.push_str(&input);
