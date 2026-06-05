@@ -75,12 +75,12 @@ struct RebindLabel { action: Action }
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Action {
     Up, Down, Left, Right,
-    Sprint, Sneak, DodgeRoll, Inventory,
+    Sprint, Sneak, DodgeRoll, Inventory, Talk,
     Hotbar1, Hotbar2, Hotbar3, Hotbar4, Hotbar5,
     Hotbar6, Hotbar7, Hotbar8, Hotbar9,
 }
 
-const ACTIONS: [(Action, &str, KeyCode); 17] = [
+const ACTIONS: [(Action, &str, KeyCode); 18] = [
     (Action::Up,        "Move up",     KeyCode::KeyW),
     (Action::Down,      "Move down",   KeyCode::KeyS),
     (Action::Left,      "Move left",   KeyCode::KeyA),
@@ -89,6 +89,7 @@ const ACTIONS: [(Action, &str, KeyCode); 17] = [
     (Action::Sneak,     "Sneak",       KeyCode::ShiftLeft),
     (Action::DodgeRoll, "Dodge roll",  KeyCode::Space),
     (Action::Inventory, "Inventory",   KeyCode::KeyE),
+    (Action::Talk,      "Talk / shout", KeyCode::KeyF),
     (Action::Hotbar1,   "Hotbar 1",    KeyCode::Digit1),
     (Action::Hotbar2,   "Hotbar 2",    KeyCode::Digit2),
     (Action::Hotbar3,   "Hotbar 3",    KeyCode::Digit3),
@@ -328,8 +329,8 @@ fn setup_settings(mut commands: Commands) {
             panel.spawn((Text::new("Keybinds"), TextFont { font_size: 18.0, ..default() }, TextColor(Color::WHITE)));
             panel.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(28.0), align_items: AlignItems::FlexStart, ..default() })
                 .with_children(|cols| {
-                    build_keybind_column(cols, &ACTIONS[0..8]);
-                    build_keybind_column(cols, &ACTIONS[8..17]);
+                     build_keybind_column(cols, &ACTIONS[0..9]);
+                    build_keybind_column(cols, &ACTIONS[9..18]);
                 });
             panel.spawn((Text::new("click a key, then press the new key  (Esc cancels / closes)"), TextFont { font_size: 11.0, ..default() }, TextColor(Color::srgb(0.55, 0.55, 0.6))));
         });

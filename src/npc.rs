@@ -12,8 +12,11 @@ const WANDER_SPEED: f32 = 55.0;
 const WANDER_RADIUS: f32 = 200.0;
 const WANDER_PAUSE: f32 = 1.5;
 
-const SOCIAL_RANGE: f32 = 280.0;     // a content friend within this -> go hang out
-const SOCIAL_DISTANCE: f32 = 46.0;   // how close they stand
+const SOCIAL_RANGE: f32 = 280.0;
+const SOCIAL_DISTANCE: f32 = 46.0;
+
+const BUBBLE_DURATION: f32 = 3.0;
+const BUBBLE_HEIGHT: f32 = 34.0;
 
 #[derive(Component)]
 struct Npc;
@@ -27,12 +30,16 @@ struct Home(Vec2);
 struct Wander { target: Vec2, pause: f32 }
 #[derive(Component, PartialEq)]
 enum Source { Food, Water }
+#[derive(Component)]
+struct Speech { cooldown: f32 }
+#[derive(Component)]
+struct SpeechBubble { timer: f32, owner: Entity }
 
 pub struct NpcPlugin;
 impl Plugin for NpcPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_npc_test)
-           .add_systems(Update, (npc_needs, npc_behavior).chain());
+           .add_systems(Update, (npc_needs, npc_behavior, npc_speak, update_bubbles).chain());
     }
 }
 
@@ -42,17 +49,6 @@ fn spawn_npc_test(mut commands: Commands) {
         (1u32, Vec2::new(120.0, -40.0), 10.0, 25.0),
     ];
     for (id, home, hunger, thirst) in villagers {
-        commands.spawn((
-            Sprite::from_color(Color::srgb(0.3, 0.8, 0.4), Vec2::new(22.0, 22.0)),
-            Transform::from_xyz(home.x, home.y, 0.0),
-            Npc,
-            NpcId(id),
-            Needs { hunger, thirst },
-            Home(home),
-            Wander { target: home, pause: 0.0 },
-        ));
-    }
-    for (id, home, hunger, thirst) in villagers {
         let mut e = commands.spawn((
             Sprite::from_color(Color::srgb(0.3, 0.8, 0.4), Vec2::new(22.0, 22.0)),
             Transform::from_xyz(home.x, home.y, 0.0),
@@ -61,6 +57,7 @@ fn spawn_npc_test(mut commands: Commands) {
             Needs { hunger, thirst },
             Home(home),
             Wander { target: home, pause: 0.0 },
+            Speech { cooldown: 2.0 },
         ));
         if id == 0 {
             e.insert(crate::dialogue::Talkable { name: "Bram", emotion: "wary" });
@@ -93,7 +90,6 @@ fn npc_behavior(
 ) {
     let dt = time.delta_secs();
 
-    // snapshot every NPC's position + whether it's content (needs met)
     let mut others: Vec<(Entity, Vec2, bool)> = Vec::new();
     for (e, t, n, _s, _h, _w, _id) in &npcs {
         let content = n.hunger < NEED_THRESHOLD && n.thirst < NEED_THRESHOLD;
@@ -105,7 +101,6 @@ fn npc_behavior(
         let top_need = if want_water { needs.thirst } else { needs.hunger };
 
         if top_need >= NEED_THRESHOLD {
-            // a need is loud -> go satisfy it
             let kind = if want_water { Source::Water } else { Source::Food };
             sprite.color = if want_water { Color::srgb(0.3, 0.6, 0.95) } else { Color::srgb(0.9, 0.6, 0.2) };
 
@@ -122,7 +117,6 @@ fn npc_behavior(
                 t.translation.y += step.y;
             } else if want_water { needs.thirst = 0.0; } else { needs.hunger = 0.0; }
         } else {
-            // content -> look for a content friend to hang out with
             let pos = t.translation.truncate();
             let mut friend = None;
             let mut best = SOCIAL_RANGE;
@@ -133,7 +127,6 @@ fn npc_behavior(
             }
 
             if let Some(fpos) = friend {
-                // socialize: approach the friend, then stand near them
                 sprite.color = Color::srgb(0.6, 0.85, 0.5);
                 let to = fpos - pos;
                 if to.length() > SOCIAL_DISTANCE {
@@ -142,7 +135,6 @@ fn npc_behavior(
                     t.translation.y += step.y;
                 }
             } else {
-                // nobody around -> wander near home (phase offset keeps the two out of sync)
                 sprite.color = Color::srgb(0.3, 0.8, 0.4);
                 let phase = id.0 as f32 * 17.3;
                 if wander.pause > 0.0 {
@@ -159,5 +151,57 @@ fn npc_behavior(
                 }
             }
         }
+    }
+}
+
+fn npc_speak(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut npcs: Query<(Entity, &Transform, &Needs, &mut Speech), With<Npc>>,
+) {
+    let dt = time.delta_secs();
+    for (npc, t, needs, mut speech) in &mut npcs {
+        speech.cooldown -= dt;
+        if speech.cooldown > 0.0 { continue; }
+        speech.cooldown = 4.0 + (t.translation.x.abs() % 3.0);
+
+        let (line, color) = if needs.thirst >= NEED_THRESHOLD {
+            ("So dry... need water.", Color::srgb(0.55, 0.75, 0.95))
+        } else if needs.hunger >= NEED_THRESHOLD {
+            ("My stomach's growling.", Color::srgb(0.95, 0.65, 0.35))
+        } else {
+            ("Fine day, this.", Color::srgb(0.75, 0.85, 0.7))
+        };
+
+        let pos = t.translation;
+        commands.spawn((
+            Text2d::new(line),
+            TextFont { font_size: 14.0, ..default() },
+            TextColor(color),
+            Transform::from_xyz(pos.x, pos.y + BUBBLE_HEIGHT, 5.0),
+            SpeechBubble { timer: BUBBLE_DURATION, owner: npc },
+        ));
+    }
+}
+
+fn update_bubbles(
+    mut commands: Commands,
+    time: Res<Time>,
+    npcs: Query<&Transform, (With<Npc>, Without<SpeechBubble>)>,
+    mut bubbles: Query<(Entity, &mut Transform, &mut TextColor, &mut SpeechBubble)>,
+) {
+    let dt = time.delta_secs();
+    for (e, mut t, mut color, mut bubble) in &mut bubbles {
+        bubble.timer -= dt;
+        if bubble.timer <= 0.0 {
+            commands.entity(e).despawn();
+            continue;
+        }
+        if let Ok(owner_t) = npcs.get(bubble.owner) {
+            t.translation.x = owner_t.translation.x;
+            t.translation.y = owner_t.translation.y + BUBBLE_HEIGHT;
+        }
+        let alpha = bubble.timer.min(1.0);
+        color.0 = color.0.with_alpha(alpha);
     }
 }
