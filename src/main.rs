@@ -75,12 +75,12 @@ struct RebindLabel { action: Action }
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Action {
     Up, Down, Left, Right,
-    Sprint, Sneak, DodgeRoll, Inventory, Talk,
+    Sprint, Sneak, DodgeRoll, Inventory, Talk, Chat,
     Hotbar1, Hotbar2, Hotbar3, Hotbar4, Hotbar5,
     Hotbar6, Hotbar7, Hotbar8, Hotbar9,
 }
 
-const ACTIONS: [(Action, &str, KeyCode); 18] = [
+const ACTIONS: [(Action, &str, KeyCode); 20] = [
     (Action::Up,        "Move up",     KeyCode::KeyW),
     (Action::Down,      "Move down",   KeyCode::KeyS),
     (Action::Left,      "Move left",   KeyCode::KeyA),
@@ -99,6 +99,8 @@ const ACTIONS: [(Action, &str, KeyCode); 18] = [
     (Action::Hotbar7,   "Hotbar 7",    KeyCode::Digit7),
     (Action::Hotbar8,   "Hotbar 8",    KeyCode::Digit8),
     (Action::Hotbar9,   "Hotbar 9",    KeyCode::Digit9),
+        (Action::Talk,      "Talk / shout", KeyCode::KeyF),
+    (Action::Chat,      "Reply / type", KeyCode::KeyT),
 ];
 
 #[derive(Resource)]
@@ -329,8 +331,8 @@ fn setup_settings(mut commands: Commands) {
             panel.spawn((Text::new("Keybinds"), TextFont { font_size: 18.0, ..default() }, TextColor(Color::WHITE)));
             panel.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(28.0), align_items: AlignItems::FlexStart, ..default() })
                 .with_children(|cols| {
-                     build_keybind_column(cols, &ACTIONS[0..9]);
-                    build_keybind_column(cols, &ACTIONS[9..18]);
+                     build_keybind_column(cols, &ACTIONS[0..10]);
+                    build_keybind_column(cols, &ACTIONS[10..19]);
                 });
             panel.spawn((Text::new("click a key, then press the new key  (Esc cancels / closes)"), TextFont { font_size: 11.0, ..default() }, TextColor(Color::srgb(0.55, 0.55, 0.6))));
         });
@@ -404,8 +406,8 @@ fn update_held_display(
 }
 
 // ---------- other logic ----------
-fn select_hotbar_slot(keys: Res<ButtonInput<KeyCode>>, binds: Res<Keybinds>, settings: Res<SettingsOpen>, mut inv: ResMut<Inventory>) {
-    if settings.0 { return; }
+fn select_hotbar_slot( input_lock: Res<dialogue::InputLock>,keys: Res<ButtonInput<KeyCode>>, binds: Res<Keybinds>, settings: Res<SettingsOpen>, mut inv: ResMut<Inventory>) {
+     if settings.0 || input_lock.0 { return; }
     let slots = [
         Action::Hotbar1, Action::Hotbar2, Action::Hotbar3, Action::Hotbar4, Action::Hotbar5,
         Action::Hotbar6, Action::Hotbar7, Action::Hotbar8, Action::Hotbar9,
@@ -415,8 +417,8 @@ fn select_hotbar_slot(keys: Res<ButtonInput<KeyCode>>, binds: Res<Keybinds>, set
     }
 }
 
-fn toggle_inventory(keys: Res<ButtonInput<KeyCode>>, binds: Res<Keybinds>, settings: Res<SettingsOpen>, mut open: ResMut<InventoryOpen>) {
-    if settings.0 { return; }
+fn toggle_inventory( input_lock: Res<dialogue::InputLock>,keys: Res<ButtonInput<KeyCode>>, binds: Res<Keybinds>, settings: Res<SettingsOpen>, mut open: ResMut<InventoryOpen>) {
+    if settings.0 || input_lock.0 { return; }
     if keys.just_pressed(binds.get(Action::Inventory)) { open.0 = !open.0; }
 }
 
@@ -494,6 +496,7 @@ fn update_stats_bars(health: Res<Health>, hunger: Res<Hunger>, mut pips: Query<(
 
 // ---------- movement ----------
 fn player_movement(
+    input_lock: Res<dialogue::InputLock>,
     keys: Res<ButtonInput<KeyCode>>, binds: Res<Keybinds>,
     inv_open: Res<InventoryOpen>, settings: Res<SettingsOpen>,
     time: Res<Time>, mut players: Query<(&mut Transform, &mut DodgeState), With<Player>>,
@@ -501,7 +504,7 @@ fn player_movement(
     let dt = time.delta_secs();
     for (mut t, mut dodge) in &mut players {
         if dodge.cooldown > 0.0 { dodge.cooldown -= dt; }
-        if inv_open.0 || settings.0 { dodge.timer = 0.0; continue; }
+       if inv_open.0 || settings.0 || input_lock.0 { dodge.timer = 0.0; continue; }
 
         let mut dir = Vec2::ZERO;
         if keys.pressed(binds.get(Action::Up))    { dir.y += 1.0; }
